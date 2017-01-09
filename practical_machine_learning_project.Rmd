@@ -1,0 +1,231 @@
+---
+title: "Practical Machine Learning - Project"
+author: "Kier O'Neil"
+date: "January 9, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Executive Summary  
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement - a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).  
+
+##Goal  
+The goal of your project is to predict the manner in which they did the exercise. This is the "classe" variable in the training set. You may use any of the other variables to predict with. You should create a report describing how you built your model, how you used cross validation, what you think the expected out of sample error is, and why you made the choices you did. You will also use your prediction model to predict 20 different test cases.  
+
+##Approach
+I intend to evaluate each of the variables within the dataset to determine which variables are insignificant for predicting the classe.  
+Once in the proper format, after transformations, I'll apply three different models to the data to determine which has the best fit.  
+I will then test the model against the validation set to look for over-fitting.  
+I will then use that model to predict on the testing set.  
+*I have relied heavily on the work of Max Kuhn to streamline the model testing process through caret.*  
+http://www.edii.uclm.es/~useR-2013/Tutorials/kuhn/user_caret_2up.pdf  
+Applied Predictive Modeling; Kuhn & Johnson  
+
+# Pre-processing the Data
+## Load Libraries  
+```{r}
+setwd("C:/Users/Kier/Documents/Analytics Course/07_PracticalMachineLearning")
+suppressMessages(library(caret))
+suppressMessages(library(ggplot2))
+suppressMessages(library(plyr))
+suppressMessages(library(tidyverse))
+suppressMessages(library(rattle))
+suppressMessages(library(partykit))
+suppressMessages(library(randomForest))
+```
+## Time-saving RDS'
+Some of these models take a longggg time to build so instead of re-running the training processes I will load the models from RDS files.  I will show the code used to build the models if you care to run it on your own.  
+```{r}
+tr_fit_rpart <- readRDS("tr_fit_rpart.RDS")
+tr_fit_rf <- readRDS("tr_fit_rf.RDS")
+tr_fit_svm_caret <- readRDS("tr_fit_svm_caret.RDS")
+tr_fit_gbm <- readRDS("tr_fit_gbm.RDS")
+```  
+##
+
+###Load data locally  
+```{r}
+training_raw <- read.csv("pml-training.csv", na.strings = c("NA", "#DIV/0!", ""))
+testing_raw <- read.csv("pml-testing.csv", na.strings = c("NA", "#DIV/0!", ""))
+# Thankfully the na.strings attribute exists to deal with those DIV/0 values.
+```
+
+### Take training and break into validation and training.  
+```{r}  
+set.seed(317) 
+in_train <- createDataPartition(training_raw$classe, p = 0.7, list = FALSE)
+validation_raw <- training_raw[-in_train, ]
+tr1 <- training_raw[in_train, ]
+```
+### Identify the variables with majority NA, and remove  
+```{r}
+set_for_removal <- tr1[,colSums(is.na(tr1))/nrow(tr1) >= 0.50]
+names_for_removal <- names(set_for_removal)
+cols_for_removal <- which(names(tr1) %in% names_for_removal)
+tr2 <- tr1[, -cols_for_removal]
+# Down to 60 variables
+```
+### Get rid of variables with near zero variance  
+```{r}
+nsv <- nearZeroVar(tr2)
+tr3 <- tr2[, -nsv]
+# Down to 59 variables
+```  
+### Remove the first six variables. They have very little value in prediction  
+```{r}
+tr4 <- tr3[, -c(1:6)]
+# down to 53 variables
+```
+Ready for pre-processing  
+
+### Remove our result variable so it doesn't get preprocessed too.  
+```{r}
+trainX <- tr4[, names(tr4) != "classe"]
+```  
+### Center & Scale  
+```{r}
+trainPreProcValues <- preProcess(trainX, method = c("center", "scale"))
+```
+### Predict the preProcValues model on trainX  
+```{r}
+trainScaled <- predict(trainPreProcValues, trainX)
+# This is really nice.  It does all the work for you.
+```
+### Look for, and removed, highly correlated variables  
+```{r}
+correlations <- cor(trainScaled)
+high_corr <- findCorrelation(correlations, cutoff = .75)
+trainFiltered <- trainScaled[, -high_corr]
+```  
+### Bind the classe variable back onto the transformed dataset.  
+```{r}
+training <- cbind(classe = tr4$classe, trainFiltered)
+```  
+### Process the validation set the same way.  
+```{r}
+validation_classe <- validation_raw$classe
+v1 <- validation_raw[, -cols_for_removal]
+v2 <- v1[, -nsv]
+v3 <- v2[, -c(1:6)]
+valX <- v3[, names(v3) != "classe"]
+valPreProcValues <- preProcess(valX, method = c("center", "scale"))
+valScaled <- predict(valPreProcValues, valX)
+valFiltered <- valScaled[, -high_corr]
+validation <- cbind(classe = validation_classe, valFiltered)
+```  
+### Process the testing set the same way  
+```{r}
+problem_id <- testing_raw$problem_id
+te1 <- testing_raw[, -cols_for_removal]
+te2 <- te1[, -nsv]
+te3 <- te2[, -c(1:6, 59)]
+testX <- te3
+testPreProcValues <- preProcess(testX, method = c("center", "scale"))
+testScaled <- predict(testPreProcValues, testX)
+testFiltered <- testScaled[, -high_corr]
+testing <- testFiltered %>%
+    mutate(classe = NA_character_) # Add the classe variable to test since it doesn't currently exist.
+```  
+### Remove intermediate variables  
+```{r}
+rm(te1, te2, te3, tr1, tr2, tr3, tr4, testScaled, trainScaled, 
+   set_for_removal, testX, trainX, v1, v2, v3, valScaled, valX, 
+   cols_for_removal, names_for_removal, nsv, testPreProcValues, 
+   trainPreProcValues, valPreProcValues, testFiltered, valFiltered, 
+   trainFiltered, correlations)
+```  
+## Model Evaluation
+Kuhn recommends to start with the black-box models like svm and gbm and then see if there are any simpler models that produce similar results.  Black-box models tend to produce better results at the expense of interpretability.  Simpler models are more interpretable and sometimes produce very similar results.  
+
+#### Each of the models will use the same cross-validation controller.   
+In this case R will do repeated 10-fold cross-validations on the training set, three times.  This takes longer but produces better results.  
+```{r}
+cvCtrl <- trainControl(method = "repeatedcv", repeats = 3, savePred=TRUE)
+```
+
+### Support Vector Machines (SVM)  
+This one has the best name by far.  It also produces some good results.  
+```{r eval=FALSE}
+tr_fit_svm_caret <- train(classe ~ ., data = training, 
+                          method = "svmRadial", 
+                          tuneGrid = data.frame(.C = c(.25, .5, 1),
+                                                .sigma = .05),
+                          trControl = cvCtrl)
+```
+I like to apply the model to both the training and validation set to see if there is a large gap in results.  If there is a large gap in accuracy between the training set and the validation set it may mean that our model is over-fitting to the training set it was modelled on.  
+```{r}
+tr_pred_svm_caret <- suppressMessages(predict(tr_fit_svm_caret, training))
+confusionMatrix(tr_pred_svm_caret, training$classe)
+# Accuracy 97.14%; Kappa 0.9638
+val_pred_svm_caret <- predict(tr_fit_svm_caret, validation)
+confusionMatrix(val_pred_svm_caret, validation$classe)
+# Accuracy 92.76; kappa 0.9084
+``` 
+This is not a bad way to start.  Predicting over 90% correct on the validation set is very promising.  
+
+### Generalized Boosting Model (GBM)   
+This is another black-box modeling package.  Let's see how it does...  
+```{r eval=FALSE}
+tr_fit_gbm <- train(classe ~ ., data = training, 
+                 method = "gbm", 
+                 trControl = cvCtrl,
+                 verbose = FALSE)
+```
+```{r}
+tr_pred_gbm <- suppressMessages(predict(tr_fit_gbm, training))
+confusionMatrix(tr_pred_gbm, training$classe)
+# Accuracy is 95.87% and Kappa is 0.9478
+val_pred_gbm <- predict(tr_fit_gbm, validation)
+confusionMatrix(val_pred_gbm, validation$classe)
+# Accuracy is 88.84% and Kappa is 0.8585.
+```  
+Accuracies of ~96% and ~89%, respectively.  
+
+### Recursive Partitioning (rpart)  
+```{r eval=FALSE}
+tr_fit_rpart <- train(classe ~ ., data = training, method = "rpart",
+                      tuneLength = 50,
+                      trControl = cvCtrl)
+```
+```{r}
+# Predict on training set
+train_pred_rpart <- suppressMessages(predict.train(tr_fit_rpart, newdata = training))
+confusionMatrix(train_pred_rpart, training$classe)
+# Predict on validation set
+val_pred_rpart <- predict.train(tr_fit_rpart, newdata = validation)
+confusionMatrix(val_pred_rpart, validation$classe)
+```
+Accuracies of ~87% and ~79%, respectively.  
+
+### Random Forest  
+I had a hard time getting this to run in caret so I used the functions within the randomForest package.
+```{r eval=FALSE}
+tr_fit_rf = randomForest(classe ~ ., data=training)
+```
+```{r}
+# Predict on training set
+train_pred_rf <- predict(tr_fit_rf, training)
+confusionMatrix(train_pred_rf, training$classe)
+# Predict on validation set
+val_pred_rf <- predict(tr_fit_rf, validation)
+confusionMatrix(val_pred_rf, validation$classe)
+```
+Interesting.  Accuracies of 100% and ~97%, respectively.
+
+## Choosing the model  
+SVM and Random Forest produced very high accuracies.  Let's apply each of them to the testing set to see what theire results are.
+```{r}
+(test_pred_svm_caret <- predict(tr_fit_svm_caret, testing))
+(test_pred_rf <- predict(tr_fit_rf, testing))
+confusionMatrix(test_pred_rf, test_pred_svm_caret)
+```
+Only 13 of the 20 test cases produced the same results between SVM and RandomForest.
+
+# Conclusion  
+In this case I would choose Random Forest as the model due to it's accuracy scores and that it's results are more interpretable.  I could further refine the rf model by pruning it a bit so that it would take out some of the complexity but produce similar results.
+```{r}
+test_pred_rf
+```
